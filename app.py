@@ -2,6 +2,7 @@
 import json
 import os
 import queue
+import signal
 import shutil
 import subprocess
 import sys
@@ -12,8 +13,9 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 import webbrowser
 import token_store
+from paths import data_root
 
-ROOT = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'MangoFlux'
+ROOT = data_root()
 HERE = Path(__file__).resolve().parent
 MODEL_URL = 'https://huggingface.co/black-forest-labs/flux-3-image-klein'
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
@@ -31,6 +33,7 @@ class App(tk.Tk):
         self.result = ROOT / 'last-result.png'
         self.photos = []
         self.operation = None
+        self.warned_keyring = False
         self.protocol('WM_DELETE_WINDOW', self.close)
         ROOT.mkdir(parents=True, exist_ok=True)
         self.build()
@@ -61,7 +64,12 @@ class App(tk.Tk):
         ttk.Button(setup, text='Forget token', command=self.forget_token).grid(row=1, column=5, padx=5, sticky='w')
         self.setup_status = ttk.Label(setup, text='', wraplength=920)
         self.setup_status.grid(row=2, column=0, columnspan=6, sticky='w')
-        ttk.Label(setup, text='Accept the model license first. Vulkan can use Intel and other compatible GPUs; it selects device 0. CPU and integrated GPUs can be slow.', wraplength=920).grid(row=3, column=0, columnspan=6, sticky='w', pady=(4, 0))
+        ttk.Label(setup, text='Accept the model license first. CPU and integrated GPUs can be slow. Vulkan works with compatible Intel, AMD, and NVIDIA GPUs.', wraplength=920).grid(row=3, column=0, columnspan=6, sticky='w', pady=(4, 0))
+        ttk.Label(setup, text='GPU index:').grid(row=4, column=0, sticky='w', pady=(5, 0))
+        self.gpu_index = tk.StringVar(value='0')
+        ttk.Spinbox(setup, from_=0, to=31, textvariable=self.gpu_index, width=5).grid(row=4, column=1, sticky='w', padx=5, pady=(5, 0))
+        ttk.Button(setup, text='List devices', command=self.list_devices).grid(row=4, column=2, sticky='w', pady=(5, 0))
+        ttk.Label(setup, text='Select one GPU; see activity for device names.').grid(row=4, column=3, columnspan=3, sticky='w', pady=(5, 0))
 
         bar = ttk.LabelFrame(self, text='2. Clean a page', padding=10)
         bar.grid(row=1, column=0, sticky='ew', padx=10, pady=5)
@@ -95,6 +103,15 @@ class App(tk.Tk):
         self.progress_label.pack(anchor='w')
 
     def detect_backend(self):
+        if sys.platform.startswith('linux'):
+            vendors = set()
+            for device in Path('/sys/class/drm').glob('card[0-9]*/device/vendor'):
+                try:
+                    vendors.add(device.read_text().strip().lower())
+                except OSError: pass
+            if '0x1002' in vendors: return 'ROCm'
+            if '0x8086' in vendors: return 'Vulkan'
+            return 'CPU'
         try:
             result = subprocess.run(['nvidia-smi', '-L'], capture_output=True, timeout=4, creationflags=NO_WINDOW)
             if result.returncode == 0: return 'CUDA'
@@ -133,7 +150,7 @@ class App(tk.Tk):
             # pythonw.exe has no console streams; use its console sibling for workers
             # so pip and native libraries can reliably report diagnostics.
             python = str(Path(sys.executable).with_name('python.exe')) if os.name == 'nt' else sys.executable
-            self.proc = subprocess.Popen([python, '-u', str(HERE / 'worker.py'), *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace', env=env, creationflags=NO_WINDOW)
+            self.proc = subprocess.Popen([python, '-u', str(HERE / 'worker.py'), *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace', env=env, creationflags=NO_WINDOW, start_new_session=(os.name != 'nt'))
         except OSError as exc:
             messagebox.showerror('Could not start', str(exc)); return
         proc = self.proc
@@ -161,6 +178,11 @@ class App(tk.Tk):
         if not self.save_token(): return
         self.launch(['download'], token=token)
 
+    def list_devices(self):
+        if self.installed == 'not installed':
+            messagebox.showinfo('Setup', 'Install a runtime first.'); return
+        self.launch(['devices'])
+
     def save_token(self, event=None):
         token = self.token.get().strip()
         try:
@@ -169,6 +191,11 @@ class App(tk.Tk):
             else:
                 token_store.forget(ROOT / 'hf-token.bin')
         except OSError as exc:
+            if os.name != 'nt':
+                if not self.warned_keyring:
+                    messagebox.showwarning('Token kept for this session', f'The desktop keyring is unavailable; the token will not be saved.\n\n{exc}')
+                    self.warned_keyring = True
+                return True
             messagebox.showerror('Could not save token', f'Windows could not protect or save the token.\n\n{exc}'); return False
         return True
 
@@ -220,7 +247,12 @@ class App(tk.Tk):
             if mode == 'Auto': mode = 'Tiled'
         self.result.unlink(missing_ok=True)
         self.show_previews()
-        self.launch(['clean', str(self.source), str(self.result), mode, self.installed], success=self.show_previews)
+        try:
+            index = int(self.gpu_index.get())
+            if not 0 <= index <= 31: raise ValueError()
+        except ValueError:
+            messagebox.showerror('Invalid GPU index', 'Enter a GPU index from 0 to 31.'); return
+        self.launch(['clean', str(self.source), str(self.result), mode, self.installed, str(index)], success=self.show_previews)
 
     def save(self):
         if self.proc: messagebox.showinfo('Busy', 'Finish or cancel the current operation first.'); return
@@ -234,7 +266,9 @@ class App(tk.Tk):
     def cancel(self):
         if self.proc:
             if os.name == 'nt': subprocess.run(['taskkill', '/F', '/T', '/PID', str(self.proc.pid)], capture_output=True, creationflags=NO_WINDOW)
-            else: self.proc.terminate()
+            else:
+                try: os.killpg(self.proc.pid, signal.SIGTERM)
+                except ProcessLookupError: pass
             self.append('Cancellation requested.')
 
     def remove_model(self):

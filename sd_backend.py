@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import socket
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -20,6 +21,11 @@ ASSETS = {
     'CUDA': [('sd-master-3be2378-bin-win-cuda12-x64.zip', '76da083337834ff9c383c5f80a49c8cf7485f8fa28d1fac1ef5ce057bbcb3e51'), ('cudart-sd-bin-win-cu12-x64.zip', 'fe20366827d357c00797eebb58244dddab7fd9a348d70090c3871004c320f38d')],
     'ROCm': [('sd-master-3be2378-bin-win-rocm-10.1.0-x64.zip', 'df5ce14e778784ab9f5302aab72bda49c3e4b512f15fea0ad5f32c616e5c5015')],
     'Vulkan': [('sd-master-3be2378-bin-win-vulkan-x64.zip', 'a5e1fa679561a3bb99b114a8f4a41e67239da29173ff725391ecfa5772e869ee')],
+}
+LINUX_ASSETS = {
+    'CPU': [('sd-master-3be2378-bin-Linux-Ubuntu-24.04-x86_64.zip', '01e1c773c1bc2a6276952f6dbd13294e58b7255c659b4a770086934c4e8fad3a')],
+    'Vulkan': [('sd-master-3be2378-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip', '7608901016fb4a348bc5b75c46fc971085dadadf44e6f30daa97301844b1ce2e')],
+    'ROCm': [('sd-master-3be2378-bin-Linux-Ubuntu-24.04-x86_64-rocm-10.1.0.zip', '0058c3547163d455c478ab593653908bfaadaf2d48e4224ad9669e9509b1c67d')],
 }
 FILES = [
     ('leejet/flux-3-image-klein-GGUF', '1c2ad2f9b9247ccca6506a23bdb033fdb0873321', 'flux3-image-klein-Q8_0.gguf', 6151716032, '8b71ffd749bcacbd50cc0acca4f2d31a044c94412743e1e780db99bf13f89752'),
@@ -42,7 +48,14 @@ def setup_runtime(root, backend, event):
     run([sys.executable, '-m', 'pip', 'install', '--disable-pip-version-check', 'huggingface_hub>=1.0,<2', 'Pillow>=10,<13'])
     dest = root / 'runtime-gguf' / backend
     dest.mkdir(parents=True, exist_ok=True)
-    for name, expected in ASSETS[backend]:
+    assets = LINUX_ASSETS if sys.platform.startswith('linux') else ASSETS
+    if backend not in assets:
+        raise RuntimeError('No packaged Linux CUDA runtime is available. Select Vulkan on Linux.')
+    if sys.platform.startswith('linux'):
+        import platform
+        if platform.machine().lower() not in ('x86_64', 'amd64'):
+            raise RuntimeError('The bundled Linux runtime requires an x86-64 system.')
+    for name, expected in assets[backend]:
         archive = root / name
         event(f'Downloading {name}...')
         try:
@@ -61,9 +74,19 @@ def setup_runtime(root, backend, event):
                     z.extract(info, dest)
         finally:
             archive.unlink(missing_ok=True)
-    matches = list(dest.rglob('sd-server.exe'))
-    if len(matches) != 1: raise RuntimeError('The runtime archive did not contain exactly one sd-server.exe.')
+    executable = 'sd-server.exe' if os.name == 'nt' else 'sd-server'
+    matches = list(dest.rglob(executable))
+    if len(matches) != 1: raise RuntimeError(f'The runtime archive did not contain exactly one {executable}.')
     server = matches[0]
+    if os.name != 'nt':
+        server.chmod(server.stat().st_mode | 0o111)
+        env = server_env(server)
+        try:
+            check = subprocess.run(['ldd', str(server)], capture_output=True, text=True, timeout=15, env=env)
+            if check.returncode or 'not found' in check.stdout:
+                raise RuntimeError('Linux runtime dependencies are missing. The prebuilt runtime targets Ubuntu 24.04; on Arch/Omarchy try Vulkan or install the required libraries.\n' + check.stdout[-2500:])
+        except FileNotFoundError:
+            event('ldd unavailable; runtime dependencies will be checked on startup.')
     for dll in dest.rglob('*.dll'):
         target = server.parent / dll.name
         if dll != target and not target.exists(): shutil.copy2(dll, target)
@@ -115,19 +138,30 @@ def edit_request(url, image, prompt, selection=None):
     return Image.open(io.BytesIO(base64.b64decode(body['data'][0]['b64_json']))).convert('RGB')
 
 
-def backend_args(backend):
+def backend_args(backend, gpu_index=0, platform=None):
+    platform = platform or sys.platform
     if backend == 'CPU':
         return ['--backend', 'cpu']
     if backend == 'Vulkan':
         # Integrated GPUs share system memory. Keeping another copy of all Q8
         # weights in RAM can leave no Vulkan workspace; stream them from disk.
-        return ['--backend', 'vulkan0', '--params-backend', 'disk', '--max-vram', 'vulkan0=4']
+        device = f'vulkan{gpu_index}'
+        if platform.startswith('linux'):
+            return ['--backend', device]
+        return ['--backend', device, '--params-backend', 'disk', '--max-vram', f'{device}=4']
     if backend in ('CUDA', 'ROCm'):
-        return ['--offload-to-cpu']
+        return ['--backend', f'{backend.lower()}{gpu_index}']
     raise ValueError(f'Unknown backend: {backend}')
 
 
-def clean(root, source, destination, mode, backend, prompt, event):
+def server_env(server):
+    env = os.environ.copy()
+    if os.name != 'nt':
+        env['LD_LIBRARY_PATH'] = str(Path(server).parent) + os.pathsep + env.get('LD_LIBRARY_PATH', '')
+    return env
+
+
+def clean(root, source, destination, mode, backend, prompt, event, gpu_index=0):
     from PIL import Image, ImageOps
     from imaging import fit_size
     config = json.loads((root / 'runtime-gguf.json').read_text(encoding='utf-8'))
@@ -137,11 +171,11 @@ def clean(root, source, destination, mode, backend, prompt, event):
         sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
     url = f'http://127.0.0.1:{port}'
     args = [config['server'], '--diffusion-model', str(model / FILES[0][2]), '--llm', str(model / FILES[1][2]), '--vae', str(model / FILES[2][2]), '--listen-ip', '127.0.0.1', '--listen-port', str(port)]
-    args += backend_args(backend)
+    args += backend_args(backend, gpu_index)
     if backend == 'Vulkan':
-        event('Using Vulkan device 0 with disk-backed model weights and a 4 GiB GPU budget. This may be slower; check the runtime log for the GPU name.')
+        event(f'Using Vulkan device {gpu_index}. Check the runtime log for the GPU name.')
     event('Starting the Q8 image editor...')
-    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace', bufsize=1, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace', bufsize=1, env=server_env(config['server']), creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     def logs():
         for line in proc.stdout: event(line.rstrip())
     threading.Thread(target=logs, daemon=True).start()

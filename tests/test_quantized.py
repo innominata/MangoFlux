@@ -13,7 +13,13 @@ import sd_backend
 class QuantizedTests(unittest.TestCase):
     def test_vulkan_runtime_and_explicit_device(self):
         self.assertIn('win-vulkan', sd_backend.ASSETS['Vulkan'][0][0])
-        self.assertEqual(sd_backend.backend_args('Vulkan'), ['--backend', 'vulkan0', '--params-backend', 'disk', '--max-vram', 'vulkan0=4'])
+        self.assertEqual(sd_backend.backend_args('Vulkan', platform='win32'), ['--backend', 'vulkan0', '--params-backend', 'disk', '--max-vram', 'vulkan0=4'])
+
+    def test_linux_selects_only_the_requested_gpu(self):
+        self.assertEqual(sd_backend.backend_args('ROCm', 1, 'linux'), ['--backend', 'rocm1'])
+        self.assertEqual(sd_backend.backend_args('Vulkan', 2, 'linux'), ['--backend', 'vulkan2'])
+        self.assertIn('Linux-Ubuntu-24.04', sd_backend.LINUX_ASSETS['ROCm'][0][0])
+        self.assertIn('Linux-Ubuntu-24.04', sd_backend.LINUX_ASSETS['Vulkan'][0][0])
 
     def test_komatose_q8_files(self):
         self.assertEqual(sd_backend.FILES[0][2], 'flux3-image-klein-Q8_0.gguf')
