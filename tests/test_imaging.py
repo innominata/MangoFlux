@@ -3,11 +3,24 @@ import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from PIL import Image
-from imaging import positions, tile_boxes, blend_tiles, fit_size
+from imaging import positions, tile_boxes, blend_tiles, fit_size, merge_reconstruction
 from worker import PROMPT
 
 
 class ImageTests(unittest.TestCase):
+    def test_overlapping_generated_tiles_fade_without_leaving_original(self):
+        original = Image.new('RGB', (4, 6), (250, 0, 0))
+        covered = Image.new('L', original.size, 0)
+        first = Image.new('RGB', (4, 4), (0, 0, 0))
+        second = Image.new('RGB', (4, 4), (200, 200, 200))
+        merge_reconstruction(original, covered, first, (0, 0, 4, 4), (0, 0, 4, 4), (0, 0), overlap=2)
+        merge_reconstruction(original, covered, second, (0, 2, 4, 6), (0, 0, 4, 4), (0, 3), overlap=2)
+        self.assertEqual(original.getpixel((0, 0)), (0, 0, 0))
+        self.assertEqual(original.getpixel((0, 2)), (100, 100, 100))
+        self.assertEqual(original.getpixel((0, 3)), (200, 200, 200))
+        self.assertEqual(original.getpixel((0, 5)), (200, 200, 200))
+        self.assertEqual(covered.getextrema(), (255, 255))
+
     def test_positions_cover_without_large_overlap(self):
         for length in (1, 1024, 1025, 1793, 4000):
             starts = positions(length)

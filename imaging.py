@@ -1,6 +1,6 @@
 """Image sizing and overlap compositing, independent of the model runtime."""
 import math
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 TILE = 1024
 OVERLAP = 128
@@ -21,6 +21,32 @@ def fit_size(size, limit=MAX_PIXELS):
     factor = min(1.0, math.sqrt(limit / (w * h)))
     # Model requires dimensions on a 16-pixel grid.
     return (max(16, round(w * factor / 16) * 16), max(16, round(h * factor / 16) * 16))
+
+
+def merge_reconstruction(canvas, covered, generated, visible, local, core_origin, overlap=256):
+    """Blend generated overlap while replacing every previously untouched pixel."""
+    left, top, right, bottom = visible
+    width, height = right - left, bottom - top
+    fade = Image.new('L', (width, height), 255)
+    x0, y0 = core_origin
+    if x0 > 0:
+        horizontal = Image.new('L', (width, height), 255)
+        draw = ImageDraw.Draw(horizontal)
+        for x in range(min(overlap, width)):
+            draw.line((x, 0, x, height - 1), fill=round(255 * (x + 1) / overlap))
+        fade = ImageChops.multiply(fade, horizontal)
+    if y0 > 0:
+        vertical = Image.new('L', (width, height), 255)
+        draw = ImageDraw.Draw(vertical)
+        for y in range(min(overlap, height)):
+            draw.line((0, y, width - 1, y), fill=round(255 * (y + 1) / overlap))
+        fade = ImageChops.multiply(fade, vertical)
+    # An untouched pixel must come entirely from the model, never from the
+    # original page, otherwise lettering can leak back into the output.
+    previously_covered = covered.crop(visible)
+    alpha = ImageChops.lighter(fade, ImageChops.invert(previously_covered))
+    canvas.paste(generated.crop(local), (left, top), alpha)
+    covered.paste(255, visible)
 
 
 def tile_boxes(size):

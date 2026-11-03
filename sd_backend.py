@@ -163,7 +163,7 @@ def server_env(server):
 
 def clean(root, source, destination, mode, backend, prompt, event, gpu_index=0):
     from PIL import Image, ImageOps
-    from imaging import fit_size
+    from imaging import fit_size, merge_reconstruction
     config = json.loads((root / 'runtime-gguf.json').read_text(encoding='utf-8'))
     if config['backend'] != backend: raise RuntimeError('Install the selected runtime first.')
     model = root / 'model-gguf'
@@ -202,7 +202,8 @@ def clean(root, source, destination, mode, backend, prompt, event, gpu_index=0):
             return result.resize(crop.size, Image.Resampling.LANCZOS) if result.size != crop.size else result
         if mode == 'Tiled':
             result = image.copy()
-            remaining = Image.new('L', size, 255)
+            covered = Image.new('L', size, 0)
+            full_page_mask = Image.new('L', size, 255)
             cores = [(x, y, min(x + 768, size[0]), min(y + 768, size[1]))
                      for y in range(0, size[1], 768) for x in range(0, size[0], 768)]
             for i, (x0, y0, x1, y1) in enumerate(cores):
@@ -221,14 +222,11 @@ def clean(root, source, destination, mode, backend, prompt, event, gpu_index=0):
                 if border[2]: crop.paste(clipped.crop((clipped.width-1, 0, clipped.width, clipped.height)).resize((border[2], clipped.height)), (border[0]+clipped.width, border[1]))
                 if border[1]: crop.paste(crop.crop((0, border[1], width, border[1]+1)).resize((width, border[1])), (0, 0))
                 if border[3]: crop.paste(crop.crop((0, border[1]+clipped.height-1, width, border[1]+clipped.height)).resize((width, border[3])), (0, border[1]+clipped.height))
-                selection = remaining.crop((left, top, left + width, top + height))
-                if not selection.getbbox():
-                    continue
+                selection = full_page_mask.crop((left, top, left + width, top + height))
                 generated = edit(crop, selection)
                 visible = (max(0, left), max(0, top), min(size[0], left + width), min(size[1], top + height))
                 local = (visible[0]-left, visible[1]-top, visible[2]-left, visible[3]-top)
-                result.paste(generated.crop(local), visible[:2], selection.crop(local))
-                remaining.paste(0, visible)
+                merge_reconstruction(result, covered, generated, visible, local, (x0, y0))
         else:
             event('Cleaning the page (16 Euler steps)...')
             result = edit(image)
