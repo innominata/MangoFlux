@@ -25,6 +25,13 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title('MangoFlux')
+        if sys.platform.startswith('linux'):
+            # Tk uses X11/XWayland on Linux. Give its windows an explicit X11
+            # pointer instead of relying on a compositor-provided default.
+            try:
+                self.configure(cursor='left_ptr')
+            except tk.TclError:
+                self.configure(cursor='arrow')
         self.geometry('1000x760')
         self.minsize(760, 600)
         self.proc = None
