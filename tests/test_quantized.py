@@ -11,6 +11,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import sd_backend
 
 class QuantizedTests(unittest.TestCase):
+    def test_rejects_black_blocks_without_rejecting_original_black_art(self):
+        white = Image.new('RGB', (256, 256), 'white')
+        black = Image.new('RGB', (256, 256), 'black')
+        mask = Image.new('L', (256, 256), 255)
+        damaged = white.copy()
+        damaged.paste('black', (0, 0, 128, 128))
+        self.assertTrue(sd_backend.invalid_black_result(white, damaged, mask))
+        self.assertFalse(sd_backend.invalid_black_result(black, black, mask))
+        self.assertFalse(sd_backend.invalid_black_result(white, white, mask))
     def test_vulkan_runtime_and_explicit_device(self):
         self.assertIn('win-vulkan', sd_backend.ASSETS['Vulkan'][0][0])
         self.assertEqual(sd_backend.backend_args('Vulkan', platform='win32'), ['--backend', 'vulkan0', '--params-backend', 'disk', '--max-vram', 'vulkan0=4'])

@@ -9,7 +9,7 @@ from paths import data_root
 
 ROOT = data_root()
 MODEL = 'black-forest-labs/flux-3-image-klein'
-PROMPT = ('Erase all lettering and sound effects, then rebuild the artwork underneath: continue the surrounding line art, shading, screentones and colour so the panel reads as if the text was never there. Match the drawing style and palette of the surrounding artwork exactly. Do not add text, symbols, signatures or new objects. Return one image with the same framing and borders as the input.')
+PROMPT = ('Erase only lettering and sound effects, then rebuild the artwork underneath: continue the surrounding line art, shading, screentones and colour so the page reads as if the text was never there. Preserve all existing artwork, characters, facial features, objects, panel borders, backgrounds, speech balloons and their outlines in their original positions. Remove text inside boxes and balloons but keep the boxes and balloons themselves. Do not remove, replace, obscure or redraw unrelated artwork. Match the drawing style and palette of the surrounding artwork exactly. Do not add text, symbols, signatures or new objects. Return one image with the same framing and borders as the input.')
 
 
 def event(message):

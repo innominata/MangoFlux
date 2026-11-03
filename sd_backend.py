@@ -112,23 +112,6 @@ def download_model(root, token, event):
     event('Q8 model download complete.')
 
 
-def ensure_text_detector(root, event):
-    import importlib.util
-    if importlib.util.find_spec('onnxruntime') is None or importlib.util.find_spec('numpy') is None:
-        from worker import run
-        event('Installing the small text-detection runtime...')
-        run([sys.executable, '-m', 'pip', 'install', '--disable-pip-version-check', 'onnxruntime>=1.20,<2', 'numpy>=1.26,<3'])
-        importlib.invalidate_caches()
-    from huggingface_hub import hf_hub_download
-    existing = root / 'text-detector' / 'comic-text-detector.onnx'
-    if existing.is_file():
-        return existing
-    event('Checking the comic text detector (about 95 MB)...')
-    path = hf_hub_download('mayocream/comic-text-detector-onnx', 'comic-text-detector.onnx',
-                           local_dir=root / 'text-detector')
-    return Path(path)
-
-
 def multipart(fields, files):
     boundary = 'mangoflux-' + uuid.uuid4().hex
     chunks = []
@@ -184,18 +167,30 @@ def invalid_black_result(reference, result, selection):
         return False
     source_dark = sum(reference.convert('L').histogram(mask=selection)[:16]) / count
     result_dark = sum(result.convert('L').histogram(mask=selection)[:16]) / count
-    return result_dark > .98 and source_dark < .8
+    if result_dark > .98 and source_dark < .8:
+        return True
+    # Also catch large black blocks inside an otherwise non-black generated tile.
+    for y in range(0, result.height - 127, 64):
+        for x in range(0, result.width - 127, 64):
+            box = (x, y, x + 128, y + 128)
+            mask = selection.crop(box)
+            count = sum(mask.histogram()[1:])
+            if count < 128 * 128 * .9:
+                continue
+            before = sum(reference.crop(box).convert('L').histogram(mask=mask)[:8]) / count
+            after = sum(result.crop(box).convert('L').histogram(mask=mask)[:8]) / count
+            if after > .995 and before < .25:
+                return True
+    return False
 
 
 def clean(root, source, destination, mode, backend, prompt, event, gpu_index=0):
     from PIL import Image, ImageOps
-    from imaging import composite_text, fit_size
-    from text_mask import detect
+    from imaging import fit_size, merge_reconstruction
     config = json.loads((root / 'runtime-gguf.json').read_text(encoding='utf-8'))
     if config['backend'] != backend: raise RuntimeError('Install the selected runtime first.')
     image = ImageOps.exif_transpose(Image.open(source)).convert('RGB')
     size = image.size
-    text_mask = detect(image, ensure_text_detector(root, event), event)
     model = root / 'model-gguf'
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
@@ -236,17 +231,14 @@ def clean(root, source, destination, mode, backend, prompt, event, gpu_index=0):
             return result.resize(crop.size, Image.Resampling.LANCZOS) if result.size != crop.size else result
         if mode == 'Tiled':
             result = image.copy()
-            remaining = text_mask.copy()
+            covered = Image.new('L', size, 0)
+            full_page_mask = Image.new('L', size, 255)
             cores = [(x, y, min(x + 768, size[0]), min(y + 768, size[1]))
                      for y in range(0, size[1], 768) for x in range(0, size[0], 768)]
             for i, (x0, y0, x1, y1) in enumerate(cores):
-                bounds = remaining.crop((x0, y0, x1, y1)).getbbox()
-                if not bounds:
-                    continue
                 event(f'Cleaning tile {i+1} of {len(cores)}...')
-                bx0, by0, bx1, by1 = bounds
-                left, top = max(0, x0 + bx0 - 128), max(0, y0 + by0 - 128)
-                right, bottom = min(size[0], x0 + bx1 + 128), min(size[1], y0 + by1 + 128)
+                left, top = max(0, x0 - 128), max(0, y0 - 128)
+                right, bottom = min(size[0], x1 + 128), min(size[1], y1 + 128)
                 width = max(512, ((right - left + 31) // 32) * 32)
                 height = max(512, ((bottom - top + 31) // 32) * 32)
                 left = round(left + ((right - left) - width) / 2)
@@ -259,20 +251,14 @@ def clean(root, source, destination, mode, backend, prompt, event, gpu_index=0):
                 if border[2]: crop.paste(clipped.crop((clipped.width-1, 0, clipped.width, clipped.height)).resize((border[2], clipped.height)), (border[0]+clipped.width, border[1]))
                 if border[1]: crop.paste(crop.crop((0, border[1], width, border[1]+1)).resize((width, border[1])), (0, 0))
                 if border[3]: crop.paste(crop.crop((0, border[1]+clipped.height-1, width, border[1]+clipped.height)).resize((width, border[3])), (0, border[1]+clipped.height))
-                selection = remaining.crop((left, top, left + width, top + height))
-                if not selection.getbbox():
-                    continue
+                selection = full_page_mask.crop((left, top, left + width, top + height))
                 generated = edit(crop, selection)
                 visible = (max(0, left), max(0, top), min(size[0], left + width), min(size[1], top + height))
                 local = (visible[0]-left, visible[1]-top, visible[2]-left, visible[3]-top)
-                mask = selection.crop(local)
-                composite_text(result, generated.crop(local), mask, visible[:2])
-                remaining.paste(0, visible)
+                merge_reconstruction(result, covered, generated, visible, local, (x0, y0))
         else:
             event('Cleaning the page (16 Euler steps)...')
-            generated = edit(image, text_mask)
-            result = image.copy()
-            composite_text(result, generated, text_mask)
+            result = edit(image, Image.new('L', image.size, 255))
         result.save(destination, format='PNG')
         event('Cleaning complete.')
     finally:

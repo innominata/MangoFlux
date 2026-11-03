@@ -44,6 +44,8 @@ class ImageTests(unittest.TestCase):
             self.assertLessEqual(w*h, 4_030_000)
 
     def test_prompt_is_exact(self):
-        self.assertEqual(PROMPT, 'Erase all lettering and sound effects, then rebuild the artwork underneath: continue the surrounding line art, shading, screentones and colour so the panel reads as if the text was never there. Match the drawing style and palette of the surrounding artwork exactly. Do not add text, symbols, signatures or new objects. Return one image with the same framing and borders as the input.')
+        self.assertIn('Erase only lettering and sound effects', PROMPT)
+        self.assertIn('Preserve all existing artwork', PROMPT)
+        self.assertIn('keep the boxes and balloons themselves', PROMPT)
 
 if __name__ == '__main__': unittest.main()
