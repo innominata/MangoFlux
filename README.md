@@ -13,7 +13,7 @@ A local Windows and Linux desktop app for removing manga lettering with FLUX 3 I
 
 ### Linux (Omarchy / Arch)
 
-The provided prebuilt runtimes target x86-64 Linux and are built for Ubuntu 24.04; compatibility with Arch/Omarchy and its installed libraries is not guaranteed. Make sure Python and Tk are installed (`sudo pacman -S --needed python tk` on Arch), then run `bash MangoFlux.sh` from the extracted app directory. The launcher creates an isolated environment under `${XDG_DATA_HOME:-~/.local/share}/MangoFlux` without changing system Python.
+The provided prebuilt runtimes target x86-64 Linux and are built for Ubuntu 24.04; compatibility with Arch/Omarchy and its installed libraries is not guaranteed. Make sure Python is installed, then run `bash MangoFlux.sh` from the extracted app directory. The launcher checks for Tk and installs it if missing using pacman, apt-get, dnf, or zypper, requesting your sudo password when needed. On other distributions, install Tk support for Python manually. The launcher creates an isolated environment under `${XDG_DATA_HOME:-~/.local/share}/MangoFlux` without changing system Python.
 
 Select **ROCm** for compatible AMD cards and install the runtime. The runtime requires a compatible ROCm 10.1 stack and GPU driver; the app does not install drivers. If the ROCm build cannot load its shared libraries or find the GPU, try **Vulkan** with an installed Vulkan driver (on Arch, `vulkan-radeon` for AMD). **CPU** is also available. The packaged Linux release does not include CUDA; NVIDIA users can use Vulkan. See [AMD's compatibility matrix](https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/compatibility/compatibilityrad/native_linux/native_linux_compatibility.html) for officially supported platforms.
 
