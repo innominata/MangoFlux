@@ -1,10 +1,16 @@
 """Image sizing and overlap compositing, independent of the model runtime."""
 import math
-from PIL import Image, ImageChops, ImageDraw
+from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 TILE = 1024
 OVERLAP = 128
 MAX_PIXELS = 4_000_000
+
+
+def composite_text(canvas, generated, selection, origin=(0, 0)):
+    """Preserve the original outside lettering, with a small edge transition."""
+    feather = selection.filter(ImageFilter.MaxFilter(9)).filter(ImageFilter.GaussianBlur(2))
+    canvas.paste(generated, origin, ImageChops.lighter(selection, feather))
 
 
 def positions(length, tile=TILE, overlap=OVERLAP):

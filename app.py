@@ -32,6 +32,11 @@ class App(tk.Tk):
                 self.configure(cursor='left_ptr')
             except tk.TclError:
                 self.configure(cursor='arrow')
+            cursor = self.cget('cursor')
+            # X11 file choosers, message boxes, and combobox menus are separate
+            # toplevels. Give those classes the same pointer as the main window.
+            for dialog_class in ('Dialog', 'TkFDialog', 'TkMotifFDialog', 'TkChooseDir', 'ComboboxPopdown'):
+                self.option_add(f'*{dialog_class}.cursor', cursor, 'userDefault')
         self.geometry('1000x760')
         self.minsize(760, 600)
         self.proc = None
@@ -281,7 +286,7 @@ class App(tk.Tk):
     def remove_model(self):
         if self.proc: messagebox.showinfo('Busy', 'Cancel or finish the current operation first.'); return
         if messagebox.askyesno('Remove model', 'Delete the downloaded model and its download cache?'):
-            for p in (ROOT / 'model-gguf', ROOT / 'model', ROOT / 'hf-cache'): shutil.rmtree(p, ignore_errors=True)
+            for p in (ROOT / 'model-gguf', ROOT / 'model', ROOT / 'hf-cache', ROOT / 'text-detector'): shutil.rmtree(p, ignore_errors=True)
             (ROOT / 'model-ready').unlink(missing_ok=True)
             (ROOT / 'model-ready-q8').unlink(missing_ok=True)
             (ROOT / 'model-ready-fp8').unlink(missing_ok=True)
